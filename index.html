@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+</head>
+<body>
+<title>Exception Salvaging Pivot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: control strip (3 uploads + run) → KPI row → filter bar → pivot matrix. Single light theme by brand rule (light backgrounds only, green/lime palette). */
+:root{
+  --green:#2E8B57; --deep:#1F6F45; --lime:#AACC00; --card:#F6FAF7; --amber:#C77700;
+  --bg:#FBFDFB; --ink:#17271E; --muted:#5C6F64; --line:#DCE7E0; --line-strong:#B9CFC2; --white:#FFFFFF;
+  --red:#B3261E; --red-bg:#FCEDEC; --amber-bg:#FFF4E2; --ok-bg:#E8F4EC;
+  --font:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--font);font-size:14px;line-height:1.45;padding-inline:16px;padding-block:20px 48px}
+.wrap{max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:20px}
+header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px;padding-bottom:12px;border-bottom:3px double var(--green)}
+.eyebrow{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--green);font-weight:600}
+h1{margin:2px 0 0;font-size:24px;font-weight:700;color:var(--deep);text-wrap:balance}
+.sub{color:var(--muted);font-size:13px;max-width:70ch}
+.btn{font:inherit;font-weight:600;font-size:13px;border-radius:6px;padding:9px 14px;border:1px solid var(--green);background:var(--white);color:var(--deep);cursor:pointer;display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.btn:hover:not(:disabled){background:var(--ok-bg)}
+.btn.primary{background:var(--green);color:var(--white)}
+.btn.primary:hover:not(:disabled){background:var(--deep)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn:focus-visible,.ms-btn:focus-visible,input:focus-visible{outline:2px solid var(--lime);outline-offset:2px}
+.btn svg{width:15px;height:15px;flex:none}
+
+.uploads{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.up{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0;position:relative}
+.up.drag{border-color:var(--green);background:var(--ok-bg)}
+.up .step{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.up h3{margin:0;font-size:14px;font-weight:700;color:var(--deep)}
+.up p{margin:0;color:var(--muted);font-size:12px}
+.up .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.up input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.fname{font-family:var(--mono);font-size:12px;color:var(--ink);overflow-wrap:anywhere;min-width:0;flex:1}
+.chip{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--white);border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.chip.ok{background:var(--ok-bg);border-color:#BFDCCB;color:var(--deep)}
+.chip.err{background:var(--red-bg);border-color:#F1C4C0;color:var(--red)}
+
+.runbar{display:flex;flex-wrap:wrap;align-items:center;gap:12px}
+.progress{flex:1;min-width:220px;display:flex;flex-direction:column;gap:6px}
+.bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--green),var(--lime));transition:width .2s}
+.msg{font-size:12px;color:var(--muted);font-family:var(--mono);overflow-wrap:anywhere}
+.msg.err{color:var(--red)}
+
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.kpi{background:var(--white);border:1px solid var(--line);border-top:3px solid var(--green);border-radius:6px;padding:12px 14px;min-width:0}
+.kpi.lime{border-top-color:var(--lime)} .kpi.amber{border-top-color:var(--amber)}
+.kpi .l{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.kpi .v{font-size:24px;font-weight:700;color:var(--deep);font-variant-numeric:tabular-nums;margin-top:2px}
+.kpi .s{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+
+.panel{background:var(--white);border:1px solid var(--line);border-radius:8px;min-width:0}
+.panel-h{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.panel-h h2{margin:0;font-size:15px;font-weight:700;color:var(--deep)}
+.panel-h .meta{font-size:12px;color:var(--muted)}
+
+.filters{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;padding:12px 14px;border-bottom:1px solid var(--line);background:var(--card)}
+.f{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1 1 200px;max-width:280px;position:relative}
+.f label{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.ms-btn{font:inherit;font-size:13px;text-align:left;background:var(--white);border:1px solid var(--line-strong);border-radius:6px;padding:8px 30px 8px 10px;cursor:pointer;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;position:relative}
+.ms-btn::after{content:"";position:absolute;right:11px;top:50%;width:7px;height:7px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:translateY(-70%) rotate(45deg)}
+.ms-btn.active{border-color:var(--green);box-shadow:inset 0 0 0 1px var(--green)}
+.ms-pop{position:absolute;top:100%;left:0;margin-top:4px;z-index:20;background:var(--white);border:1px solid var(--line-strong);border-radius:8px;box-shadow:0 8px 24px rgba(23,39,30,.14);width:min(320px,calc(100vw - 32px));display:flex;flex-direction:column}
+.ms-pop input[type=search]{font:inherit;font-size:13px;margin:8px;padding:7px 9px;border:1px solid var(--line-strong);border-radius:5px}
+.ms-list{max-height:260px;overflow:auto;padding:0 4px 4px;border-top:1px solid var(--line)}
+.ms-opt{display:flex;align-items:center;gap:8px;padding:6px 6px;border-radius:4px;cursor:pointer;font-size:13px}
+.ms-opt:hover{background:var(--card)}
+.ms-opt.all{font-weight:600;border-bottom:1px solid var(--line);border-radius:0;margin-bottom:2px}
+.ms-opt span.t{flex:1;min-width:0;overflow-wrap:anywhere}
+.ms-opt span.c{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.ms-opt input{accent-color:var(--green);margin:0}
+.ms-foot{display:flex;gap:8px;justify-content:space-between;align-items:center;padding:8px;border-top:1px solid var(--line)}
+.ms-foot .hint{font-size:11px;color:var(--muted)}
+.factions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.pending{font-size:12px;color:var(--amber);font-weight:600}
+
+.tbl-wrap{overflow:auto;max-height:70vh}
+table.pv{border-collapse:separate;border-spacing:0;font-size:12.5px;font-variant-numeric:tabular-nums;min-width:100%}
+.pv th,.pv td{padding:6px 10px;border-bottom:1px solid var(--line);border-right:1px solid var(--line);white-space:nowrap}
+.pv thead th{position:sticky;background:var(--deep);color:var(--white);font-weight:600;text-align:center;z-index:2}
+.pv thead tr:first-child th{top:0}
+.pv thead tr:nth-child(2) th{top:31px;background:#2A7A4E;font-weight:500;font-size:12px}
+.pv thead th.tot{background:#185A38}
+.pv th.loc,.pv td.loc{position:sticky;left:0;text-align:left;z-index:1}
+.pv thead th.loc{z-index:3;background:var(--deep)}
+.pv td.loc{background:var(--white);font-weight:500}
+.pv td{text-align:right}
+.pv td.sub{background:var(--card);font-weight:600;color:var(--deep)}
+.pv td.gt{background:#EAF3D6;font-weight:700;color:var(--deep)}
+.pv tfoot td{position:sticky;bottom:0;background:#EAF3D6;font-weight:700;color:var(--deep);border-top:2px solid var(--green)}
+.pv tfoot td.loc{background:#EAF3D6;z-index:2}
+.pv tbody tr:hover td{box-shadow:inset 0 0 0 9999px rgba(170,204,0,.10)}
+.pv td.z{color:transparent}
+
+.empty{padding:40px 16px;text-align:center;color:var(--muted);display:flex;flex-direction:column;align-items:center;gap:8px}
+.empty b{color:var(--deep);font-size:15px}
+.empty ol{text-align:left;margin:6px 0 0;padding-left:20px;max-width:60ch}
+.sortsel{font:inherit;font-size:12px;padding:5px 8px;border:1px solid var(--line-strong);border-radius:5px;background:var(--white);color:var(--ink)}
+footer{color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:10px}
+@media (prefers-reduced-motion:reduce){.bar i{transition:none}}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <div class="eyebrow">Middle Mile · Trust &amp; Safety</div>
+      <h1>Exception Salvaging Pivot</h1>
+      <div class="sub">Upload the three files, run the lookups, then filter the pendency pivot. Everything runs in your browser; nothing is uploaded anywhere.</div>
+    </div>
+    <div class="factions">
+      <button class="btn" id="dlBase" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v8m0 0L5 7m3 3 3-3M3 13h10"/></svg>Download base file</button>
+    </div>
+  </header>
+
+  <section class="uploads" aria-label="File uploads">
+    <div class="up" data-key="sal">
+      <div class="step">FILE 1 · .xlsx / .xls / .csv · up to 200 MB</div>
+      <h3>Exception Salvaging File</h3>
+      <p>Uses the <b>BASE</b> sheet. Lookups key on its Awb_number column.</p>
+      <div class="row"><button class="btn" data-pick="sal">Choose file</button><span class="chip" id="chip-sal">Not uploaded</span></div>
+      <div class="fname" id="name-sal"></div>
+      <input type="file" id="in-sal" accept=".xlsx,.xls,.xlsb,.csv">
+    </div>
+    <div class="up" data-key="exc">
+      <div class="step">FILE 2 · .zip (or a single .csv / .xlsx) · up to 200 MB</div>
+      <h3>Exception Report</h3>
+      <p>Zip of the regional combined reports plus the orphan shipments list.</p>
+      <div class="row"><button class="btn" data-pick="exc">Choose file</button><span class="chip" id="chip-exc">Not uploaded</span></div>
+      <div class="fname" id="name-exc"></div>
+      <input type="file" id="in-exc" accept=".zip,.csv,.xlsx,.xls">
+    </div>
+    <div class="up" data-key="lbl">
+      <div class="step">FILE 3 · .xlsx / .xls / .csv · up to 200 MB</div>
+      <h3>Label Reprint Data</h3>
+      <p>Matched on awb_number. Found = YES, not found = #N/A.</p>
+      <div class="row"><button class="btn" data-pick="lbl">Choose file</button><span class="chip" id="chip-lbl">Not uploaded</span></div>
+      <div class="fname" id="name-lbl"></div>
+      <input type="file" id="in-lbl" accept=".xlsx,.xls,.xlsb,.csv">
+    </div>
+  </section>
+
+  <div class="runbar">
+    <button class="btn primary" id="run" disabled><svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5v11l9-5.5z"/></svg>Run VLOOKUP</button>
+    <div class="progress"><div class="bar"><i id="bar"></i></div><div class="msg" id="msg">Upload all three files to start.</div></div>
+  </div>
+
+  <section class="kpis" id="kpis" hidden>
+    <div class="kpi"><div class="l">AWBs in base</div><div class="v" id="k-total">0</div><div class="s" id="k-total-s"></div></div>
+    <div class="kpi"><div class="l">Found in exception report</div><div class="v" id="k-exc">0</div><div class="s" id="k-exc-s"></div></div>
+    <div class="kpi amber"><div class="l">Found only in orphan list</div><div class="v" id="k-orph">0</div><div class="s" id="k-orph-s"></div></div>
+    <div class="kpi lime"><div class="l">Label reprinted</div><div class="v" id="k-lbl">0</div><div class="s" id="k-lbl-s"></div></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-h">
+      <div><h2>Pendency by current location</h2><div class="meta" id="pvMeta">Count of AWB NUMBER · rows: CURRENT LOCATION · columns: PENDENCY TYPE › CENTRAL PIVOT</div></div>
+      <div class="factions">
+        <select class="sortsel" id="sortSel" aria-label="Sort rows"><option value="total">Sort: Grand total ↓</option><option value="az">Sort: Location A–Z</option></select>
+        <button class="btn" id="dlPivot" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v8m0 0L5 7m3 3 3-3M3 13h10"/></svg>Download table</button>
+      </div>
+    </div>
+    <div class="filters" id="filters" hidden>
+      <div class="f" data-field="moved"><label>Moved to GA</label></div>
+      <div class="f" data-field="cpivot"><label>Central Pivot</label></div>
+      <div class="f" data-field="ptype"><label>Pendency Type</label></div>
+      <div class="f" data-field="label"><label>Label Reprinted</label></div>
+      <div class="factions">
+        <button class="btn primary" id="apply">Apply filters</button>
+        <button class="btn" id="reset">Reset</button>
+        <span class="pending" id="pending" hidden>Changes not applied · press Enter</span>
+      </div>
+    </div>
+    <div class="tbl-wrap" id="tblWrap">
+      <div class="empty">
+        <b>The pivot appears here after you run the lookups</b>
+        <ol>
+          <li>Exception report: AWB/MANIFEST NO, INBOUND DATE, MOVED TO GA and EXP STATUS are looked up against Awb_number (first match, files in zip order). AWBs not in the reports but on the orphan list take the orphan's MOVED TO GA.</li>
+          <li>Label reprint: Awb_number found in the label reprint data is marked YES.</li>
+          <li>The table counts AWBs by CURRENT LOCATION (DC liability) against Pendency Type and Central Pivot.</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+  <footer>Lookups follow Excel VLOOKUP rules: exact match on a trimmed, case-insensitive AWB, first hit wins, a matched blank returns 0 and no match returns #N/A.</footer>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
+<script>
+(function(){
+"use strict";
+const MAX_BYTES = 200*1024*1024;
+const $ = id => document.getElementById(id);
+const files = {sal:null, exc:null, lbl:null};
+let R = null;            // result model
+let applied = null;      // applied filter selections {field:Set|null}
+let draft = null;        // draft selections
+
+const norm = s => String(s==null?"":s).toUpperCase().replace(/_/g," ").replace(/\s*\/\s*/g,"/").replace(/\s+/g," ").trim();
+const key = s => String(s==null?"":s).trim().toUpperCase();
+const fmt = n => n.toLocaleString("en-IN");
+const tick = () => new Promise(r => setTimeout(r, 0));
+const mb = b => (b/1048576).toFixed(1)+" MB";
+
+function setMsg(t, err){ const m=$("msg"); m.textContent=t; m.className="msg"+(err?" err":""); }
+function setBar(p){ $("bar").style.width = Math.max(0,Math.min(100,p))+"%"; }
+
+/* ---------- uploads ---------- */
+document.querySelectorAll("[data-pick]").forEach(b => b.addEventListener("click", () => $("in-"+b.dataset.pick).click()));
+["sal","exc","lbl"].forEach(k => {
+  $("in-"+k).addEventListener("change", e => { if (e.target.files[0]) takeFile(k, e.target.files[0]); e.target.value=""; });
+  const card = document.querySelector('.up[data-key="'+k+'"]');
+  card.addEventListener("dragover", e => { e.preventDefault(); card.classList.add("drag"); });
+  card.addEventListener("dragleave", () => card.classList.remove("drag"));
+  card.addEventListener("drop", e => { e.preventDefault(); card.classList.remove("drag"); const f=e.dataTransfer.files[0]; if (f) takeFile(k, f); });
+});
+function takeFile(k, f){
+  const chip = $("chip-"+k);
+  const ext = (f.name.split(".").pop()||"").toLowerCase();
+  const ok = k==="exc" ? ["zip","csv","xlsx","xls"] : ["xlsx","xls","xlsb","csv"];
+  if (!ok.includes(ext)) { files[k]=null; chip.textContent="Wrong file type"; chip.className="chip err"; $("name-"+k).textContent=f.name+" · use ."+ok.join(" / ."); return updRun(); }
+  if (f.size > MAX_BYTES) { files[k]=null; chip.textContent="Over 200 MB"; chip.className="chip err"; $("name-"+k).textContent=f.name+" · "+mb(f.size); return updRun(); }
+  files[k]=f; chip.textContent="Ready"; chip.className="chip ok"; $("name-"+k).textContent=f.name+" · "+mb(f.size);
+  updRun();
+}
+function updRun(){
+  const all = files.sal && files.exc && files.lbl;
+  $("run").disabled = !all;
+  if (!R) setMsg(all ? "All files ready. Click Run VLOOKUP." : "Upload all three files to start.");
+}
+
+/* ---------- parsing helpers ---------- */
+function parseQuoted(line){
+  const out=[]; let cur="", q=false;
+  for (let i=0;i<line.length;i++){
+    const c=line[i];
+    if (q){ if (c==='"'){ if (line[i+1]==='"'){cur+='"';i++;} else q=false; } else cur+=c; }
+    else if (c==='"') q=true; else if (c===','){ out.push(cur); cur=""; } else cur+=c;
+  }
+  out.push(cur); return out;
+}
+function quoteCount(s){ let n=0, i=-1; while((i=s.indexOf('"',i+1))!==-1) n++; return n; }
+// Iterate CSV rows; calls fn(cells) and yields to the UI periodically.
+async function eachCsvRow(text, fn, onProg){
+  const n=text.length; let i=0, c=0;
+  while (i<n){
+    let j=text.indexOf("\n",i); if (j<0) j=n;
+    let line=text.slice(i,j); i=j+1;
+    if (line.indexOf('"')>=0){
+      while (quoteCount(line)%2===1 && i<n){ let k=text.indexOf("\n",i); if(k<0)k=n; line+="\n"+text.slice(i,k); i=k+1; }
+      if (line.endsWith("\r")) line=line.slice(0,-1);
+      if (fn(parseQuoted(line))===false) return;
+    } else {
+      if (line.endsWith("\r")) line=line.slice(0,-1);
+      if (fn(line.split(","))===false) return;
+    }
+    if (++c % 150000 === 0){ if (onProg) onProg(i/n); await tick(); }
+  }
+}
+function headerIndex(hdr, names){ // first column whose normalized header equals one of names
+  const H = hdr.map(norm);
+  for (const nm of names){ const i=H.indexOf(nm); if (i>=0) return i; }
+  return -1;
+}
+function findHeaderRow(aoa, pred, maxScan){
+  for (let r=0;r<Math.min(aoa.length,maxScan||15);r++){ if (aoa[r] && pred((aoa[r]||[]).map(norm))) return r; }
+  return -1;
+}
+function sheetAoa(ws){ return XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null,blankrows:false}); }
+function readWorkbook(buf, opts){ return XLSX.read(buf, Object.assign({type:"array",cellDates:true,cellNF:false,cellStyles:false,cellHTML:false,cellText:false}, opts||{})); }
+function textOf(u8){ return new TextDecoder("utf-8").decode(u8); }
+// returns [{name, aoa}] for xlsx/csv bytes; CSV is handled by caller (streaming)
+function isCsv(name){ return /\.(csv|txt)$/i.test(name); }
+
+/* ---------- 1. salvaging base ---------- */
+const ERR = {0:"#NULL!",7:"#DIV/0!",15:"#VALUE!",23:"#REF!",29:"#NAME?",36:"#NUM!",42:"#N/A"};
+async function loadBase(f){
+  setMsg("Reading Exception Salvaging File ("+mb(f.size)+")…"); await tick();
+  const buf = new Uint8Array(await f.arrayBuffer());
+  let aoa, sheetName="BASE"; const fmts = {};
+  const isAwbHdr = H => H.includes("AWB NUMBER");
+  if (isCsv(f.name)){
+    const wb = XLSX.read(textOf(buf),{type:"string",raw:true,cellDates:true});
+    aoa = sheetAoa(wb.Sheets[wb.SheetNames[0]]); sheetName = "BASE";
+  } else {
+    const names = XLSX.read(buf,{type:"array",bookSheets:true}).SheetNames;
+    let pick = names.find(n => norm(n)==="BASE");
+    const raw = {cellDates:false, cellNF:true};
+    let ws = null;
+    if (pick){
+      const wb = readWorkbook(buf,Object.assign({sheets:[pick]},raw)); ws = wb.Sheets[pick]; sheetName = pick;
+    } else {
+      const wb = readWorkbook(buf,raw);
+      for (const n of wb.SheetNames){ if (findHeaderRow(sheetAoa(wb.Sheets[n]),isAwbHdr)>=0){ ws=wb.Sheets[n]; sheetName=n; break; } }
+      if (!ws) throw new Error("No BASE sheet and no sheet with an Awb_number column was found in the Exception Salvaging File.");
+    }
+    // keep blank rows so cell addresses line up, then carry over error text (#N/A) and date formats
+    aoa = XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null,blankrows:true});
+    const rg = XLSX.utils.decode_range(ws["!ref"]);
+    for (const a in ws){
+      if (a[0]==="!") continue; const c = ws[a];
+      if (c.t!=="e" && !(c.t==="n" && c.z)) continue;
+      const d = XLSX.utils.decode_cell(a), rr = d.r-rg.s.r, cc = d.c-rg.s.c;
+      if (c.t==="e"){ if (aoa[rr]) aoa[rr][cc] = c.w || ERR[c.v] || "#N/A"; }
+      else if (fmts[cc]==null && XLSX.SSF.is_date(c.z)) fmts[cc] = c.z;
+    }
+  }
+  const hr = findHeaderRow(aoa, isAwbHdr);
+  if (hr<0) throw new Error("The BASE sheet has no Awb_number column in its first 15 rows.");
+  const header = aoa[hr].map(v => v==null?"":String(v));
+  const rows = aoa.slice(hr+1).filter(r => r && r.some(v => v!=null && v!==""));
+  const colFmt = header.map((_,i) => fmts[i] || null);
+  return {header, rows, sheetName, colFmt};
+}
+
+/* ---------- 2. exception report ---------- */
+async function loadException(f, keySet, onP){
+  const buf = new Uint8Array(await f.arrayBuffer());
+  let entries = [];
+  if (/\.zip$/i.test(f.name)){
+    fflate.unzipSync(buf,{filter:e => { if (!/\/$/.test(e.name) && !/(^|\/)(__MACOSX|\._)/.test(e.name) && /\.(csv|txt|xlsx|xls|xlsb)$/i.test(e.name)) entries.push(e.name); return false; }});
+    if (!entries.length) throw new Error("The Exception Report zip has no .csv or .xlsx files inside.");
+  } else entries = [null];
+
+  const exc = new Map();   // key -> [manifest, inbound, moved, exp]
+  const orph = new Map();  // key -> {moved, inbound, exp}
+  const log = [];
+  for (let fi=0; fi<entries.length; fi++){
+    const name = entries[fi] || f.name;
+    const base = name.split("/").pop();
+    const prog = p => onP((fi+p)/entries.length, base);
+    prog(0); await tick();
+    const bytes = entries[fi] ? fflate.unzipSync(buf,{filter:e=>e.name===name})[name] : buf;
+    let kind=null, cols=null, rowsHit=0, rowsAll=0;
+    const handle = (cells, isHeader) => {
+      if (isHeader){
+        const iMan = headerIndex(cells,["AWB/MANIFEST NO","AWB/MANIFEST NUMBER","AWB/ MANIFEST NO"]);
+        if (iMan>=0){ kind="exc"; cols={k:iMan, inb:headerIndex(cells,["INBOUND DATE"]), mv:headerIndex(cells,["MOVED TO GA"]), ex:headerIndex(cells,["EXP STATUS"])}; return true; }
+        const iAwb = headerIndex(cells,["AWB NUMBER","AWB NO","AWB"]);
+        if (iAwb>=0){ kind="orph"; cols={k:iAwb, mv:headerIndex(cells,["MOVED TO GA"]), inb:headerIndex(cells,["INBOUND DATE"]), ex:headerIndex(cells,["EXP STATUS"])}; return true; }
+        return false;
+      }
+      rowsAll++;
+      const k = key(cells[cols.k]); if (!k || !keySet.has(k)) return;
+      const g = i => (i<0 || cells[i]==null) ? "" : cells[i];
+      if (kind==="exc"){ if (!exc.has(k)){ exc.set(k,[cells[cols.k], g(cols.inb), g(cols.mv), g(cols.ex)]); rowsHit++; } }
+      else { if (!orph.has(k)){ orph.set(k,{mv: cols.mv<0 ? "Orphan Shipments" : g(cols.mv), inb:g(cols.inb), ex:g(cols.ex)}); rowsHit++; } }
+    };
+    if (isCsv(base)){
+      let text = textOf(bytes);
+      let first = true, skip = false;
+      await eachCsvRow(text, cells => {
+        if (first){ first=false; if (!handle(cells,true)){ skip=true; return false; } return; }
+        handle(cells,false);
+      }, prog);
+      text = null;
+      if (skip){ log.push(base+": skipped (no AWB column)"); continue; }
+    } else {
+      const wb = readWorkbook(bytes);
+      let done=false;
+      for (const sn of wb.SheetNames){
+        const a = sheetAoa(wb.Sheets[sn]);
+        const hr = findHeaderRow(a, H => H.includes("AWB/MANIFEST NO")||H.includes("AWB NUMBER")||H.includes("AWB NO")||H.includes("AWB"));
+        if (hr<0) continue;
+        handle(a[hr],true);
+        for (let r=hr+1;r<a.length;r++) if (a[r]) handle(a[r],false);
+        done=true; break;
+      }
+      if (!done){ log.push(base+": skipped (no AWB column)"); continue; }
+    }
+    log.push(base+": "+(kind==="exc"?"exception":"orphan")+" · "+fmt(rowsAll)+" rows");
+  }
+  if (!log.some(l => /exception ·/.test(l))) throw new Error("No exception report file with an 'AWB/ MANIFEST NO' column was found in the upload.");
+  return {exc, orph, log};
+}
+
+/* ---------- 3. label reprint ---------- */
+async function loadLabel(f){
+  const buf = new Uint8Array(await f.arrayBuffer());
+  const set = new Set();
+  if (isCsv(f.name)){
+    let col=-1, first=true;
+    await eachCsvRow(textOf(buf), cells => {
+      if (first){ first=false; col=headerIndex(cells,["AWB NUMBER","AWB NO","AWB"]); if (col<0) throw new Error("Label Reprint file has no awb_number column."); return; }
+      const k=key(cells[col]); if (k) set.add(k);
+    });
+  } else {
+    const wb = readWorkbook(buf,{sheets:[XLSX.read(buf,{type:"array",bookSheets:true}).SheetNames[0]]});
+    const a = sheetAoa(wb.Sheets[wb.SheetNames[0]]);
+    const hr = findHeaderRow(a, H => H.includes("AWB NUMBER")||H.includes("AWB NO")||H.includes("AWB"));
+    if (hr<0) throw new Error("Label Reprint file has no awb_number column in its first 15 rows.");
+    const col = headerIndex(a[hr],["AWB NUMBER","AWB NO","AWB"]);
+    for (let r=hr+1;r<a.length;r++){ const k=a[r]&&key(a[r][col]); if (k) set.add(k); }
+  }
+  return set;
+}
+
+/* ---------- build ---------- */
+const MON = {JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11};
+// Converts report date text to an Excel date serial (timezone-free), else returns the text unchanged.
+const EPOCH = Date.UTC(1899,11,30);
+const serial = (y,mo,d,h,mi,s) => (Date.UTC(y,mo,d,h||0,mi||0,s||0)-EPOCH)/864e5;
+function toDate(v){
+  if (typeof v==="number") return v;
+  const s = String(v).trim(); let m;
+  if ((m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/)) && MON[m[2].toUpperCase()]!=null){ let y=+m[3]; if (y<100) y+=2000; return serial(y,MON[m[2].toUpperCase()],+m[1]); }
+  if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/))) return serial(+m[1],+m[2]-1,+m[3],+(m[4]||0),+(m[5]||0),+(m[6]||0));
+  return s;
+}
+const vl = v => (v==="" || v==null) ? 0 : v;   // Excel VLOOKUP returns 0 for a blank matched cell
+
+async function run(){
+  $("run").disabled = true; $("dlBase").disabled = true; $("dlPivot").disabled = true;
+  const t0 = performance.now();
+  try{
+    setBar(2);
+    const base = await loadBase(files.sal); setBar(15);
+    const H = base.header.map(norm);
+    const iAwb = H.indexOf("AWB NUMBER");
+    // ensure lookup columns exist (insert after Awb_number in the standard order if missing)
+    const want = [["LABEL", h=>h.includes("LABEL REPRINT"), "LABEL REPRINTED"],["MAN", h=>h==="AWB/MANIFEST NO","AWB/ MANIFEST NO"],["MV",h=>h==="MOVED TO GA","MOVED TO GA"],["INB",h=>h==="INBOUND DATE","INBOUND DATE"],["EXP",h=>h==="EXP STATUS","EXP STATUS"]];
+    let insertAt = iAwb+1;
+    for (const [, test, label] of want){
+      let i = base.header.map(norm).findIndex(test);
+      if (i<0){ base.header.splice(insertAt,0,label); base.colFmt.splice(insertAt,0,null); base.rows.forEach(r => r.splice(insertAt,0,null)); i=insertAt; }
+      insertAt = i+1;
+    }
+    const HH = base.header.map(norm);
+    const ix = {
+      awb: HH.indexOf("AWB NUMBER"),
+      label: HH.findIndex(h=>h.includes("LABEL REPRINT")),
+      man: HH.indexOf("AWB/MANIFEST NO"), mv: HH.indexOf("MOVED TO GA"), inb: HH.indexOf("INBOUND DATE"), exp: HH.indexOf("EXP STATUS"),
+      ptype: HH.indexOf("PENDENCY TYPE"), cpivot: HH.indexOf("CENTRAL PIVOT"),
+      loc: HH.indexOf("CURRENT LOCATION")>=0 ? HH.indexOf("CURRENT LOCATION") : HH.indexOf("DC LIABILITY")
+    };
+    const miss = [["Pendency Type","ptype"],["Central Pivot","cpivot"],["DC liability / CURRENT LOCATION","loc"]].filter(([,k])=>ix[k]<0).map(([n])=>n);
+    if (miss.length) throw new Error("BASE sheet is missing: "+miss.join(", ")+".");
+
+    base.colFmt[ix.inb] = "dd-mmm-yyyy";
+    const keySet = new Set(); for (const r of base.rows){ const k=key(r[ix.awb]); if (k) keySet.add(k); }
+    setMsg("Base: "+fmt(base.rows.length)+" rows. Reading Exception Report…"); await tick();
+    const ex = await loadException(files.exc, keySet, (p,n) => { setBar(15+p*65); setMsg("Exception Report · "+n+" · "+Math.round(p*100)+"%"); });
+    setBar(82); setMsg("Reading Label Reprint data…"); await tick();
+    const lbl = await loadLabel(files.lbl);
+    setBar(92); setMsg("Applying lookups…"); await tick();
+
+    let nExc=0, nOrph=0, nLbl=0;
+    for (const r of base.rows){
+      const k = key(r[ix.awb]);
+      const e = k && ex.exc.get(k);
+      if (e){ nExc++; r[ix.man]=vl(e[0]); r[ix.inb]=e[1]===""?0:toDate(e[1]); r[ix.mv]=vl(e[2]); r[ix.exp]=vl(e[3]); }
+      else {
+        const o = k && ex.orph.get(k);
+        if (o){ nOrph++; r[ix.man]=r[ix.awb]; r[ix.mv]=vl(o.mv); r[ix.inb]=o.inb===""?"":toDate(o.inb); r[ix.exp]=o.ex===""?"":o.ex; }
+        else { r[ix.man]="#N/A"; r[ix.mv]="#N/A"; r[ix.inb]="#N/A"; r[ix.exp]="#N/A"; }
+      }
+      if (k && lbl.has(k)){ r[ix.label]="YES"; nLbl++; } else r[ix.label]="#N/A";
+    }
+    R = {base, ix, nExc, nOrph, nLbl, log: ex.log};
+    buildModel();
+    const secs = ((performance.now()-t0)/1000).toFixed(1);
+    setBar(100); setMsg("Done in "+secs+" s · "+ex.log.join(" | "));
+    $("dlBase").disabled = false; $("dlPivot").disabled = false;
+  } catch(err){
+    console.error(err); setBar(0); setMsg((err && err.message) || String(err), true);
+  } finally { $("run").disabled = !(files.sal && files.exc && files.lbl); }
+}
+$("run").addEventListener("click", run);
+
+/* ---------- model, filters, pivot ---------- */
+const FIELDS = ["moved","cpivot","ptype","label"];
+const BLANK = "(Blank)";
+const disp = v => { if (v==null || v==="") return BLANK; if (v instanceof Date) return v.toISOString().slice(0,10); return String(v).trim()===""?BLANK:String(v); };
+function buildModel(){
+  const {base, ix} = R; const n = base.rows.length;
+  const src = {moved:ix.mv, cpivot:ix.cpivot, ptype:ix.ptype, label:ix.label, loc:ix.loc};
+  R.codes = {}; R.dict = {}; R.counts = {};
+  R.hasAwb = new Uint8Array(n); for (let i=0;i<n;i++) R.hasAwb[i] = key(base.rows[i][ix.awb]) ? 1 : 0;
+  for (const f of [...FIELDS,"loc"]){
+    const d = new Map(), arr = new Int32Array(n), cnt=[];
+    for (let i=0;i<n;i++){ const v = disp(base.rows[i][src[f]]); let c=d.get(v); if (c===undefined){ c=d.size; d.set(v,c); cnt.push(0);} arr[i]=c; cnt[c]++; }
+    R.codes[f]=arr; R.dict[f]=[...d.keys()]; R.counts[f]=cnt;
+  }
+  applied = Object.fromEntries(FIELDS.map(f=>[f,null]));
+  draft = Object.fromEntries(FIELDS.map(f=>[f,null]));
+  $("kpis").hidden = false; $("filters").hidden = false;
+  $("k-total").textContent = fmt(n); $("k-total-s").textContent = "Sheet: "+base.sheetName;
+  $("k-exc").textContent = fmt(R.nExc); $("k-exc-s").textContent = pct(R.nExc,n)+" of base";
+  $("k-orph").textContent = fmt(R.nOrph); $("k-orph-s").textContent = pct(R.nOrph,n)+" of base";
+  $("k-lbl").textContent = fmt(R.nLbl); $("k-lbl-s").textContent = pct(R.nLbl,n)+" of base";
+  FIELDS.forEach(buildFilter);
+  renderPivot();
+}
+const pct = (a,b) => b ? (a*100/b).toFixed(1)+"%" : "0%";
+function sortedOpts(f){
+  const d=R.dict[f], c=R.counts[f];
+  return d.map((v,i)=>({v,i,c:c[i]})).sort((a,b)=> (a.v===BLANK)-(b.v===BLANK) || (a.v==="#N/A")-(b.v==="#N/A") || a.v.localeCompare(b.v,undefined,{numeric:true,sensitivity:"base"}));
+}
+function btnLabel(f, sel){
+  const total = R.dict[f].length;
+  if (!sel || sel.size===total) return "All ("+total+")";
+  if (sel.size===0) return "None selected";
+  if (sel.size===1) return R.dict[f][[...sel][0]];
+  return sel.size+" of "+total+" selected";
+}
+let openPop = null;
+function closePop(){ if (openPop){ openPop.remove(); openPop=null; } }
+function buildFilter(f){
+  const box = document.querySelector('.f[data-field="'+f+'"]');
+  box.querySelectorAll(".ms-btn,.ms-pop").forEach(e=>e.remove());
+  const b = document.createElement("button"); b.className="ms-btn"; b.type="button"; b.id="ms-"+f;
+  b.textContent = btnLabel(f, draft[f]); box.appendChild(b);
+  b.addEventListener("click", e => { e.stopPropagation(); if (openPop && openPop.dataset.f===f) return closePop(); closePop(); showPop(f, box); });
+}
+function showPop(f, box){
+  const pop = document.createElement("div"); pop.className="ms-pop"; pop.dataset.f=f; pop.setAttribute("role","dialog");
+  const all = R.dict[f].map((_,i)=>i);
+  const sel = new Set(draft[f] ? draft[f] : all);
+  pop.innerHTML = '<input type="search" placeholder="Search…" aria-label="Search options"><div class="ms-list"></div><div class="ms-foot"><span class="hint">Enter to apply</span><button class="btn primary" type="button">Apply</button></div>';
+  const list = pop.querySelector(".ms-list"), search = pop.querySelector("input"), opts = sortedOpts(f);
+  function render(){
+    const q = search.value.trim().toLowerCase();
+    const vis = opts.filter(o => !q || o.v.toLowerCase().includes(q));
+    const allChecked = vis.length && vis.every(o=>sel.has(o.i));
+    list.innerHTML = "";
+    const a = document.createElement("label"); a.className="ms-opt all";
+    a.innerHTML = '<input type="checkbox"><span class="t">'+(q?"Select all matches":"Select all")+'</span>';
+    const ac = a.querySelector("input"); ac.checked = !!allChecked; ac.indeterminate = !allChecked && vis.some(o=>sel.has(o.i));
+    ac.addEventListener("change", () => { vis.forEach(o => ac.checked ? sel.add(o.i) : sel.delete(o.i)); commit(); render(); });
+    list.appendChild(a);
+    const frag = document.createDocumentFragment();
+    for (const o of vis){
+      const l = document.createElement("label"); l.className="ms-opt";
+      const cb = document.createElement("input"); cb.type="checkbox"; cb.checked = sel.has(o.i);
+      cb.addEventListener("change", () => { cb.checked ? sel.add(o.i) : sel.delete(o.i); commit(); render(); });
+      const t = document.createElement("span"); t.className="t"; t.textContent=o.v;
+      const c = document.createElement("span"); c.className="c"; c.textContent=fmt(o.c);
+      l.append(cb,t,c); frag.appendChild(l);
+    }
+    list.appendChild(frag);
+  }
+  function commit(){ draft[f] = sel.size===all.length ? null : new Set(sel); document.getElementById("ms-"+f).textContent = btnLabel(f, draft[f]); markPending(); }
+  search.addEventListener("input", render);
+  pop.querySelector(".ms-foot .btn").addEventListener("click", () => { closePop(); applyFilters(); });
+  pop.addEventListener("click", e => e.stopPropagation());
+  box.appendChild(pop); openPop = pop; render(); search.focus();
+}
+document.addEventListener("click", closePop);
+function sameSel(a,b){ if (a===b) return true; if (!a||!b) return false; if (a.size!==b.size) return false; for (const x of a) if (!b.has(x)) return false; return true; }
+function markPending(){
+  const p = FIELDS.some(f => !sameSel(draft[f], applied[f]));
+  $("pending").hidden = !p;
+  FIELDS.forEach(f => { const b=document.getElementById("ms-"+f); if (b) b.classList.toggle("active", !!applied[f]); });
+}
+function applyFilters(){
+  if (!R) return;
+  FIELDS.forEach(f => applied[f] = draft[f] ? new Set(draft[f]) : null);
+  markPending(); renderPivot();
+}
+$("apply").addEventListener("click", () => { closePop(); applyFilters(); });
+$("reset").addEventListener("click", () => { closePop(); FIELDS.forEach(f => { draft[f]=null; const b=document.getElementById("ms-"+f); if (b) b.textContent=btnLabel(f,null); }); applyFilters(); });
+document.addEventListener("keydown", e => {
+  if (e.key==="Enter" && R && ($("filters").contains(e.target) || openPop)) { e.preventDefault(); closePop(); applyFilters(); }
+  if (e.key==="Escape" && openPop) closePop();
+});
+$("sortSel").addEventListener("change", () => R && renderPivot());
+
+function computePivot(){
+  const n = R.base.rows.length, C = R.codes;
+  const masks = FIELDS.map(f => { const s=applied[f]; if (!s) return null; const m=new Uint8Array(R.dict[f].length); s.forEach(i=>m[i]=1); return m; });
+  const nP = R.dict.ptype.length, nC = R.dict.cpivot.length, nL = R.dict.loc.length;
+  const grid = new Int32Array(nL*nP*nC);
+  let total=0;
+  outer: for (let i=0;i<n;i++){
+    if (!R.hasAwb[i]) continue;   // "Count of AWB NUMBER" skips blank AWB cells, as in Excel
+    for (let k=0;k<FIELDS.length;k++){ const m=masks[k]; if (m && !m[C[FIELDS[k]][i]]) continue outer; }
+    grid[(C.loc[i]*nP + C.ptype[i])*nC + C.cpivot[i]]++; total++;
+  }
+  // columns: per pendency type, central pivots with non-zero totals
+  const colTot = new Map();
+  for (let l=0;l<nL;l++) for (let p=0;p<nP;p++) for (let c=0;c<nC;c++){ const v=grid[(l*nP+p)*nC+c]; if (v){ const k=p*nC+c; colTot.set(k,(colTot.get(k)||0)+v); } }
+  const ptypes = R.dict.ptype.map((v,i)=>({v,i})).sort((a,b)=>(a.v===BLANK)-(b.v===BLANK)||a.v.localeCompare(b.v));
+  const groups = [];
+  for (const p of ptypes){
+    const cols = R.dict.cpivot.map((v,c)=>({v,c,t:colTot.get(p.i*nC+c)||0})).filter(x=>x.t>0).sort((a,b)=>(a.v===BLANK)-(b.v===BLANK)||a.v.localeCompare(b.v,undefined,{sensitivity:"base"}));
+    if (cols.length) groups.push({p:p.v, pi:p.i, cols});
+  }
+  const rows = [];
+  for (let l=0;l<nL;l++){
+    const cells=[]; let gt=0;
+    for (const g of groups){ let st=0; const vals=g.cols.map(col=>{ const v=grid[(l*nP+g.pi)*nC+col.c]; st+=v; return v; }); cells.push({vals,st}); gt+=st; }
+    if (gt>0) rows.push({loc:R.dict.loc[l], cells, gt});
+  }
+  if ($("sortSel").value==="az") rows.sort((a,b)=>(a.loc===BLANK)-(b.loc===BLANK)||a.loc.localeCompare(b.loc));
+  else rows.sort((a,b)=>b.gt-a.gt||a.loc.localeCompare(b.loc));
+  const foot = groups.map(g=>{ const vals=g.cols.map(c=>c.t); return {vals, st: vals.reduce((a,b)=>a+b,0)}; });
+  return {groups, rows, foot, total};
+}
+function esc(s){ return String(s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function renderPivot(){
+  const P = R.pivot = computePivot();
+  const filt = FIELDS.filter(f=>applied[f]).map(f=>({moved:"Moved to GA",cpivot:"Central Pivot",ptype:"Pendency Type",label:"Label Reprinted"}[f]));
+  $("pvMeta").textContent = "Count of AWB NUMBER · "+fmt(P.total)+" AWBs · "+P.rows.length+" locations"+(filt.length?" · filtered by "+filt.join(", "):" · no filters");
+  if (!P.rows.length){ $("tblWrap").innerHTML = '<div class="empty"><b>No AWBs match these filters</b><span>Widen a filter or press Reset.</span></div>'; return; }
+  let max=0; P.rows.forEach(r=>r.cells.forEach(c=>c.vals.forEach(v=>{ if(v>max) max=v; })));
+  const shade = v => { if (!v) return ""; const a = 0.06 + 0.5*Math.sqrt(v/max); return ' style="background:rgba(46,139,87,'+a.toFixed(3)+')'+(a>0.42?';color:#fff':'')+'"'; };
+  let h = '<table class="pv"><thead><tr><th class="loc" rowspan="2">CURRENT LOCATION</th>';
+  for (const g of P.groups) h += '<th colspan="'+(g.cols.length+1)+'">'+esc(g.p)+'</th>';
+  h += '<th class="tot" rowspan="2">Grand Total</th></tr><tr>';
+  for (const g of P.groups){ for (const c of g.cols) h += '<th>'+esc(c.v)+'</th>'; h += '<th class="tot">'+esc(g.p)+' Total</th>'; }
+  h += '</tr></thead><tbody>';
+  for (const r of P.rows){
+    h += '<tr><td class="loc">'+esc(r.loc)+'</td>';
+    r.cells.forEach(c => { c.vals.forEach(v => { h += v ? '<td'+shade(v)+'>'+fmt(v)+'</td>' : '<td class="z">0</td>'; }); h += '<td class="sub">'+fmt(c.st)+'</td>'; });
+    h += '<td class="gt">'+fmt(r.gt)+'</td></tr>';
+  }
+  h += '</tbody><tfoot><tr><td class="loc">Grand Total</td>';
+  P.foot.forEach(c => { c.vals.forEach(v => h += '<td>'+fmt(v)+'</td>'); h += '<td>'+fmt(c.st)+'</td>'; });
+  h += '<td>'+fmt(P.total)+'</td></tr></tfoot></table>';
+  $("tblWrap").innerHTML = h;
+}
+
+/* ---------- downloads ---------- */
+const today = () => { const d=new Date(); return String(d.getDate()).padStart(2,"0")+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+d.getFullYear(); };
+async function saveFile(filename, u8){
+  const blob = new Blob([u8],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+  let dl = null;
+  try { if (window.claude && window.claude.use) dl = await window.claude.use("downloads"); } catch(e){ dl=null; }
+  if (dl){
+    try { await dl.save({filename, data: blob}); setMsg("Saved "+filename); }
+    catch(e){ const c=e&&e.code; setMsg(c==="declined" ? "Download cancelled." : c==="rate_limited" ? "A download prompt is already open." : "Download failed: "+((e&&e.message)||c||e), c!=="declined"); }
+    return;
+  }
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+  setMsg("Saved "+filename);
+}
+$("dlBase").addEventListener("click", async () => {
+  if (!R) return; const btn=$("dlBase"); btn.disabled=true; setMsg("Building base file…"); await tick();
+  try{
+    const aoa = [R.base.header, ...R.base.rows];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    R.base.colFmt.forEach((z,c) => { if (!z) return;
+      for (let r=1;r<aoa.length;r++){ const cell = ws[XLSX.utils.encode_cell({r,c})]; if (cell && cell.t==="n" && cell.v>0) cell.z = z; } });
+    ws["!cols"] = R.base.header.map(h=>({wch: Math.min(40, Math.max(10, String(h).length+2))}));
+    ws["!autofilter"] = {ref: XLSX.utils.encode_range({s:{r:0,c:0},e:{r:0,c:R.base.header.length-1}})};
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "BASE");
+    const out = XLSX.write(wb,{type:"array",bookType:"xlsx",compression:true});
+    await saveFile("Exception_Salvaging_BASE_"+today()+".xlsx", new Uint8Array(out));
+  } catch(e){ setMsg("Could not build the base file: "+e.message, true); }
+  btn.disabled=false;
+});
+$("dlPivot").addEventListener("click", async () => {
+  if (!R || !R.pivot) return; const P=R.pivot;
+  const r1=["CURRENT LOCATION"], r2=[""];
+  for (const g of P.groups){ g.cols.forEach((c,i)=>{ r1.push(i===0?g.p:""); r2.push(c.v); }); r1.push(""); r2.push(g.p+" Total"); }
+  r1.push("Grand Total"); r2.push("");
+  const fl = FIELDS.map(f=>{ const n={moved:"MOVED TO GA",cpivot:"CENTRAL PIVOT",ptype:"PENDENCY TYPE",label:"LABEL REPRINTED"}[f]; const s=applied[f]; return [n, s ? [...s].map(i=>R.dict[f][i]).join(", ") : "(All)"]; });
+  const body = P.rows.map(r=>{ const a=[r.loc]; r.cells.forEach(c=>{ c.vals.forEach(v=>a.push(v||null)); a.push(c.st); }); a.push(r.gt); return a; });
+  const ft = ["Grand Total"]; P.foot.forEach(c=>{ c.vals.forEach(v=>ft.push(v)); ft.push(c.st); }); ft.push(P.total);
+  const all = [...fl, [], r1, r2, ...body, ft];
+  const ws = XLSX.utils.aoa_to_sheet(all);
+  const hdrRow = fl.length+1;
+  ws["!merges"] = P.groups.map((g,gi)=>{ let s=1; for (let k=0;k<gi;k++) s+=P.groups[k].cols.length+1; return {s:{r:hdrRow,c:s},e:{r:hdrRow,c:s+g.cols.length}}; })
+    .concat([{s:{r:hdrRow,c:0},e:{r:hdrRow+1,c:0}},{s:{r:hdrRow,c:r1.length-1},e:{r:hdrRow+1,c:r1.length-1}}]);
+  ws["!cols"] = [{wch:24}].concat(r2.slice(1).map(h=>({wch:Math.max(8,Math.min(24,String(h).length+2))})));
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "PIVOT");
+  await saveFile("Pendency_Pivot_"+today()+".xlsx", new Uint8Array(XLSX.write(wb,{type:"array",bookType:"xlsx",compression:true})));
+});
+
+window.__salvage = { get R(){ return R; } };
+if (!window.XLSX || !window.fflate) setMsg("Spreadsheet libraries did not load. Check your connection and reload the page.", true);
+})();
+</script>
+
+</body>
+</html>
