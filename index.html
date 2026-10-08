@@ -107,6 +107,8 @@ table.pv{border-collapse:separate;border-spacing:0;font-size:12.5px;font-variant
 .empty b{color:var(--deep);font-size:15px}
 .empty ol{text-align:left;margin:6px 0 0;padding-left:20px;max-width:60ch}
 .sortsel{font:inherit;font-size:12px;padding:5px 8px;border:1px solid var(--line-strong);border-radius:5px;background:var(--white);color:var(--ink)}
+.dlnote{flex-basis:100%;font-size:12px;color:var(--deep);text-align:right;max-width:46ch;margin-left:auto}
+.dlnote.err{color:var(--red)}
 footer{color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:10px}
 @media (prefers-reduced-motion:reduce){.bar i{transition:none}}
 </style>
@@ -119,7 +121,9 @@ footer{color:var(--muted);font-size:12px;border-top:1px solid var(--line);paddin
       <div class="sub">Upload the three files, run the lookups, then filter the pendency pivot. Everything runs in your browser; nothing is uploaded anywhere.</div>
     </div>
     <div class="factions">
-      <button class="btn" id="dlBase" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v8m0 0L5 7m3 3 3-3M3 13h10"/></svg>Download base file</button>
+      <button class="btn primary" id="dlBase" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v8m0 0L5 7m3 3 3-3M3 13h10"/></svg><span>Download base file (.xlsx)</span></button>
+      <button class="btn" id="dlBaseCsv" disabled>.csv</button>
+      <div class="dlnote" id="dlStatus" role="status" hidden></div>
     </div>
   </header>
 
@@ -421,7 +425,8 @@ function toDate(v){
 const vl = v => (v==="" || v==null) ? 0 : v;   // Excel VLOOKUP returns 0 for a blank matched cell
 
 async function run(){
-  $("run").disabled = true; $("dlBase").disabled = true; $("dlPivot").disabled = true;
+  $("run").disabled = true; $("dlBase").disabled = true; $("dlBaseCsv").disabled = true; $("dlPivot").disabled = true;
+  baseFile = {xlsx:null, csv:null}; $("dlBase").lastChild.textContent = "Download base file (.xlsx)"; $("dlStatus").hidden = true;
   const t0 = performance.now();
   try{
     setBar(2);
@@ -471,7 +476,7 @@ async function run(){
     buildModel();
     const secs = ((performance.now()-t0)/1000).toFixed(1);
     setBar(100); setMsg("Done in "+secs+" s · "+ex.log.join(" | "));
-    $("dlBase").disabled = false; $("dlPivot").disabled = false;
+    $("dlBase").disabled = false; $("dlBaseCsv").disabled = false; $("dlPivot").disabled = false;
   } catch(err){
     console.error(err); setBar(0); setMsg((err && err.message) || String(err), true);
   } finally { $("run").disabled = !(files.sal && files.exc && files.lbl); }
@@ -633,34 +638,74 @@ function renderPivot(){
 
 /* ---------- downloads ---------- */
 const today = () => { const d=new Date(); return String(d.getDate()).padStart(2,"0")+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+d.getFullYear(); };
-async function saveFile(filename, u8){
-  const blob = new Blob([u8],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
-  let dl = null;
-  try { if (window.claude && window.claude.use) dl = await window.claude.use("downloads"); } catch(e){ dl=null; }
-  if (dl){
-    try { await dl.save({filename, data: blob}); setMsg("Saved "+filename); }
-    catch(e){ const c=e&&e.code; setMsg(c==="declined" ? "Download cancelled." : c==="rate_limited" ? "A download prompt is already open." : "Download failed: "+((e&&e.message)||c||e), c!=="declined"); }
+const MIME = {xlsx:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", csv:"text/csv"};
+// Resolve the viewer's download capability once at load, so a click can save immediately
+// (a save that waits several seconds after the click can lose the browser's permission to download).
+let DL = null;
+try { if (window.claude && window.claude.use) window.claude.use("downloads").then(d => { DL = d; }).catch(() => {}); } catch(e){}
+function dlNote(t, err){ const s=$("dlStatus"); s.textContent=t; s.className="dlnote"+(err?" err":""); s.hidden=!t; setMsg(t, err); }
+async function saveFile(filename, blob){
+  if (DL){
+    try { await DL.save({filename, data: blob}); dlNote("Saved "+filename+" ("+mb(blob.size)+")."); }
+    catch(e){
+      const c = e && e.code;
+      if (c==="declined") dlNote("Download cancelled.");
+      else if (c==="rate_limited") dlNote("A save prompt is already open. Accept or close it, then click again.", true);
+      else if (c==="too_large") dlNote("This file is too large to save here. Use the CSV button instead.", true);
+      else dlNote("Download failed ("+(c||(e&&e.message)||e)+"). Click the button again, or use the CSV button.", true);
+    }
     return;
   }
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = filename; document.body.appendChild(a); a.click();
-  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
-  setMsg("Saved "+filename);
+  // Standalone page (opened from the .html file or hosted): a normal browser download.
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = filename; a.rel = "noopener"; a.style.display = "none";
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 120000);   // keep the file alive while a large download starts
+  dlNote("Download started: "+filename+" ("+mb(blob.size)+"). If nothing appeared, click the button again.");
 }
-$("dlBase").addEventListener("click", async () => {
-  if (!R) return; const btn=$("dlBase"); btn.disabled=true; setMsg("Building base file…"); await tick();
-  try{
-    const aoa = [R.base.header, ...R.base.rows];
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    R.base.colFmt.forEach((z,c) => { if (!z) return;
-      for (let r=1;r<aoa.length;r++){ const cell = ws[XLSX.utils.encode_cell({r,c})]; if (cell && cell.t==="n" && cell.v>0) cell.z = z; } });
-    ws["!cols"] = R.base.header.map(h=>({wch: Math.min(40, Math.max(10, String(h).length+2))}));
-    ws["!autofilter"] = {ref: XLSX.utils.encode_range({s:{r:0,c:0},e:{r:0,c:R.base.header.length-1}})};
-    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "BASE");
-    const out = XLSX.write(wb,{type:"array",bookType:"xlsx",compression:true});
-    await saveFile("Exception_Salvaging_BASE_"+today()+".xlsx", new Uint8Array(out));
-  } catch(e){ setMsg("Could not build the base file: "+e.message, true); }
-  btn.disabled=false;
-});
+
+// The base file is built once per run, then saved straight from the click.
+let baseFile = { xlsx:null, csv:null };
+function buildBaseXlsx(){
+  const aoa = [R.base.header, ...R.base.rows];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  R.base.colFmt.forEach((z,c) => { if (!z) return;
+    for (let r=1;r<aoa.length;r++){ const cell = ws[XLSX.utils.encode_cell({r,c})]; if (cell && cell.t==="n" && cell.v>0) cell.z = z; } });
+  ws["!cols"] = R.base.header.map(h=>({wch: Math.min(40, Math.max(10, String(h).length+2))}));
+  ws["!autofilter"] = {ref: XLSX.utils.encode_range({s:{r:0,c:0},e:{r:0,c:R.base.header.length-1}})};
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "BASE");
+  return new Blob([XLSX.write(wb,{type:"array",bookType:"xlsx",compression:true})],{type:MIME.xlsx});
+}
+function buildBaseCsv(){
+  const fm = R.base.colFmt;
+  const cell = (v,c) => {
+    if (v==null) return "";
+    if (typeof v==="number" && fm[c] && v>0) v = XLSX.SSF.format(fm[c], v);
+    const s = String(v);
+    return /[",\r\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+  };
+  const parts = ["﻿"+R.base.header.map(cell).join(",")];
+  for (const r of R.base.rows){ let line=""; for (let c=0;c<R.base.header.length;c++){ if (c) line+=","; line+=cell(r[c],c); } parts.push(line); }
+  return new Blob([parts.join("\r\n")],{type:MIME.csv});
+}
+async function downloadBase(kind){
+  if (!R) return;
+  const name = "Exception_Salvaging_BASE_"+today()+"."+kind;
+  if (baseFile[kind]) return saveFile(name, baseFile[kind]);
+  const btns = [$("dlBase"),$("dlBaseCsv")]; btns.forEach(b=>b.disabled=true);
+  dlNote("Preparing the base file ("+fmt(R.base.rows.length)+" rows)…"); await tick(); await tick();
+  try {
+    baseFile[kind] = kind==="xlsx" ? buildBaseXlsx() : buildBaseCsv();
+  } catch(e){
+    btns.forEach(b=>b.disabled=false);
+    return dlNote("Could not build the ."+kind+" file"+(kind==="xlsx"?" (the browser may be out of memory). Try the CSV button.":".")+" "+(e&&e.message||""), true);
+  }
+  btns.forEach(b=>b.disabled=false);
+  if (kind==="xlsx") $("dlBase").lastChild.textContent = "Save base file · "+mb(baseFile.xlsx.size);
+  await saveFile(name, baseFile[kind]);
+}
+$("dlBase").addEventListener("click", () => downloadBase("xlsx"));
+$("dlBaseCsv").addEventListener("click", () => downloadBase("csv"));
 $("dlPivot").addEventListener("click", async () => {
   if (!R || !R.pivot) return; const P=R.pivot;
   const r1=["CURRENT LOCATION"], r2=[""];
@@ -676,7 +721,7 @@ $("dlPivot").addEventListener("click", async () => {
     .concat([{s:{r:hdrRow,c:0},e:{r:hdrRow+1,c:0}},{s:{r:hdrRow,c:r1.length-1},e:{r:hdrRow+1,c:r1.length-1}}]);
   ws["!cols"] = [{wch:24}].concat(r2.slice(1).map(h=>({wch:Math.max(8,Math.min(24,String(h).length+2))})));
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "PIVOT");
-  await saveFile("Pendency_Pivot_"+today()+".xlsx", new Uint8Array(XLSX.write(wb,{type:"array",bookType:"xlsx",compression:true})));
+  await saveFile("Pendency_Pivot_"+today()+".xlsx", new Blob([XLSX.write(wb,{type:"array",bookType:"xlsx",compression:true})],{type:MIME.xlsx}));
 });
 
 window.__salvage = { get R(){ return R; } };
