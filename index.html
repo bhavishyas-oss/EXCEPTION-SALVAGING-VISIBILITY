@@ -172,6 +172,7 @@ footer{color:var(--muted);font-size:12px;border-top:1px solid var(--line);paddin
       <div class="factions">
         <select class="sortsel" id="sortSel" aria-label="Sort rows"><option value="total">Sort: Grand total ↓</option><option value="az">Sort: Location A–Z</option></select>
         <button class="btn" id="dlPivot" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2v8m0 0L5 7m3 3 3-3M3 13h10"/></svg>Download table</button>
+        <button class="btn" id="dlPivotImg" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="m2.5 11 3.5-3.5 3 3 2-2 2.5 2.5"/><circle cx="10.5" cy="6" r="1"/></svg>Download image</button>
       </div>
     </div>
     <div class="filters" id="filters" hidden>
@@ -425,7 +426,7 @@ function toDate(v){
 const vl = v => (v==="" || v==null) ? 0 : v;   // Excel VLOOKUP returns 0 for a blank matched cell
 
 async function run(){
-  $("run").disabled = true; $("dlBase").disabled = true; $("dlBaseCsv").disabled = true; $("dlPivot").disabled = true;
+  $("run").disabled = true; $("dlBase").disabled = true; $("dlBaseCsv").disabled = true; $("dlPivot").disabled = true; $("dlPivotImg").disabled = true;
   baseFile = {xlsx:null, csv:null}; $("dlBase").lastChild.textContent = "Download base file (.xlsx)"; $("dlStatus").hidden = true;
   const t0 = performance.now();
   try{
@@ -476,7 +477,7 @@ async function run(){
     buildModel();
     const secs = ((performance.now()-t0)/1000).toFixed(1);
     setBar(100); setMsg("Done in "+secs+" s · "+ex.log.join(" | "));
-    $("dlBase").disabled = false; $("dlBaseCsv").disabled = false; $("dlPivot").disabled = false;
+    $("dlBase").disabled = false; $("dlBaseCsv").disabled = false; $("dlPivot").disabled = false; $("dlPivotImg").disabled = false;
   } catch(err){
     console.error(err); setBar(0); setMsg((err && err.message) || String(err), true);
   } finally { $("run").disabled = !(files.sal && files.exc && files.lbl); }
@@ -722,6 +723,110 @@ $("dlPivot").addEventListener("click", async () => {
   ws["!cols"] = [{wch:24}].concat(r2.slice(1).map(h=>({wch:Math.max(8,Math.min(24,String(h).length+2))})));
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "PIVOT");
   await saveFile("Pendency_Pivot_"+today()+".xlsx", new Blob([XLSX.write(wb,{type:"array",bookType:"xlsx",compression:true})],{type:MIME.xlsx}));
+});
+
+/* ---------- table image (PNG) ---------- */
+// Draws the whole pivot as currently filtered and sorted — every row and column, not just the visible scroll area.
+const FONT = '"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
+function wrapText(ctx, text, maxW){
+  const words = String(text).split(" "), lines = []; let line = "";
+  for (const w of words){ const t = line ? line+" "+w : w; if (ctx.measureText(t).width > maxW && line){ lines.push(line); line = w; } else line = t; }
+  if (line) lines.push(line); return lines;
+}
+async function buildPivotPng(){
+  const P = R.pivot;
+  try { if (document.fonts && document.fonts.ready) await document.fonts.ready; } catch(e){}
+  const m = document.createElement("canvas").getContext("2d");
+  const fBody = "400 13px "+FONT, fBold = "600 13px "+FONT, fHead = "600 12.5px "+FONT;
+  const PADX = 12, ROWH = 30, HEADH = 32;
+  // column model: location, then per group (cols…, subtotal), then grand total
+  const cols = [{kind:"loc", head:"CURRENT LOCATION"}];
+  P.groups.forEach((g,gi) => { g.cols.forEach((c,ci) => cols.push({kind:"val", head:c.v, gi, ci})); cols.push({kind:"sub", head:g.p+" Total", gi}); });
+  cols.push({kind:"gt", head:"Grand Total"});
+  const cellText = (r, col) => col.kind==="loc" ? r.loc : col.kind==="val" ? (r.cells[col.gi].vals[col.ci] ? fmt(r.cells[col.gi].vals[col.ci]) : "") : col.kind==="sub" ? fmt(r.cells[col.gi].st) : fmt(r.gt);
+  const footText = col => col.kind==="loc" ? "Grand Total" : col.kind==="val" ? fmt(P.foot[col.gi].vals[col.ci]) : col.kind==="sub" ? fmt(P.foot[col.gi].st) : fmt(P.total);
+  cols.forEach(col => {
+    m.font = fHead; let w = m.measureText(col.head).width;
+    m.font = col.kind==="loc" ? fBold : fBody;
+    for (const r of P.rows) w = Math.max(w, m.measureText(cellText(r,col)).width);
+    m.font = fBold; w = Math.max(w, m.measureText(footText(col)).width);
+    col.w = Math.ceil(w + PADX*2) + (col.kind==="loc" ? 8 : 0);
+  });
+  const tableW = cols.reduce((a,c)=>a+c.w, 0);
+  // title block
+  const M = 28, W = Math.max(tableW, 720) + M*2;
+  m.font = "400 12.5px "+FONT;
+  const filtLines = [];
+  FIELDS.forEach(f => { const s = applied[f]; if (!s) return;
+    const n = {moved:"MOVED TO GA",cpivot:"CENTRAL PIVOT",ptype:"PENDENCY TYPE",label:"LABEL REPRINTED"}[f];
+    wrapText(m, n+": "+[...s].map(i=>R.dict[f][i]).join(", "), W-M*2).forEach(l => filtLines.push(l)); });
+  if (!filtLines.length) filtLines.push("Filters: none (all values)");
+  const titleH = 30 + 20 + filtLines.length*18 + 16;
+  const H = M + titleH + HEADH*2 + P.rows.length*ROWH + HEADH + M;
+  // scale: 2x for crisp text, reduced only if the browser's canvas size limit would be exceeded
+  let S = 2; while (S > 1 && (W*S > 16000 || H*S > 16000 || W*H*S*S > 2.6e8)) S -= 0.25;
+  const cv = document.createElement("canvas"); cv.width = Math.round(W*S); cv.height = Math.round(H*S);
+  const ctx = cv.getContext("2d"); ctx.scale(S,S);
+  ctx.fillStyle = "#FBFDFB"; ctx.fillRect(0,0,W,H);
+  // title
+  let y = M;
+  ctx.textBaseline = "alphabetic"; ctx.textAlign = "left";
+  ctx.fillStyle = "#1F6F45"; ctx.font = "700 20px "+FONT; ctx.fillText("Pendency by current location", M, y+20);
+  ctx.fillStyle = "#5C6F64"; ctx.font = "400 12.5px "+FONT;
+  ctx.fillText("Count of AWB NUMBER · "+fmt(P.total)+" AWBs · "+P.rows.length+" locations · generated "+today(), M, y+44);
+  filtLines.forEach((l,i) => ctx.fillText(l, M, y+64+i*18));
+  y += titleH;
+  ctx.fillStyle = "#2E8B57"; ctx.fillRect(M, y-10, tableW, 1); ctx.fillRect(M, y-7, tableW, 1);
+  // shading identical to the on-screen table
+  let max = 0; P.rows.forEach(r => r.cells.forEach(c => c.vals.forEach(v => { if (v>max) max=v; })));
+  const shadeA = v => 0.06 + 0.5*Math.sqrt(v/max);
+  const LINE = "#DCE7E0";
+  const cell = (x, yy, w, h, bg, text, font, color) => {
+    ctx.fillStyle = bg; ctx.fillRect(x, yy, w, h);
+    ctx.strokeStyle = LINE; ctx.lineWidth = 1; ctx.strokeRect(x+0.5, yy+0.5, w, h);
+    if (text){ ctx.font = font; ctx.fillStyle = color; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(text, x+w/2, yy+h/2+0.5); }
+  };
+  // header row 1: location, group bands, grand total
+  let x = M;
+  const hdr = (xx, yy, w, h, bg, t, f) => { ctx.fillStyle = bg; ctx.fillRect(xx, yy, w, h); ctx.strokeStyle = "rgba(255,255,255,.18)"; ctx.strokeRect(xx+0.5, yy+0.5, w, h);
+    ctx.font = f || fHead; ctx.fillStyle = "#FFFFFF"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(t, xx+w/2, yy+h/2+0.5); };
+  hdr(x, y, cols[0].w, HEADH*2, "#1F6F45", "CURRENT LOCATION"); x += cols[0].w;
+  let ci = 1;
+  P.groups.forEach(g => { const n = g.cols.length+1; let w = 0; for (let k=0;k<n;k++) w += cols[ci+k].w;
+    hdr(x, y, w, HEADH, "#1F6F45", g.p, "600 13px "+FONT);
+    let xx = x; for (let k=0;k<n;k++){ const c = cols[ci+k]; hdr(xx, y+HEADH, c.w, HEADH, c.kind==="sub" ? "#185A38" : "#2A7A4E", c.head, c.kind==="sub" ? fHead : "500 12px "+FONT); xx += c.w; }
+    x += w; ci += n; });
+  hdr(x, y, cols[cols.length-1].w, HEADH*2, "#185A38", "Grand Total");
+  y += HEADH*2;
+  // body
+  for (const r of P.rows){
+    x = M;
+    for (const c of cols){
+      const t = cellText(r, c);
+      if (c.kind==="loc") cell(x, y, c.w, ROWH, "#FFFFFF", t, "500 13px "+FONT, "#17271E");
+      else if (c.kind==="sub") cell(x, y, c.w, ROWH, "#F6FAF7", t, fBold, "#1F6F45");
+      else if (c.kind==="gt") cell(x, y, c.w, ROWH, "#EAF3D6", t, "700 13px "+FONT, "#1F6F45");
+      else { const v = r.cells[c.gi].vals[c.ci];
+        if (v){ const a = shadeA(v); cell(x, y, c.w, ROWH, "#FFFFFF", "", fBody, ""); ctx.fillStyle = "rgba(46,139,87,"+a.toFixed(3)+")"; ctx.fillRect(x+1, y+1, c.w-1, ROWH-1);
+          ctx.font = fBody; ctx.fillStyle = a>0.42 ? "#FFFFFF" : "#17271E"; ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText(t, x+c.w/2, y+ROWH/2+0.5); }
+        else cell(x, y, c.w, ROWH, "#FFFFFF", "", fBody, ""); }
+      x += c.w;
+    }
+    y += ROWH;
+  }
+  // footer
+  x = M;
+  for (const c of cols){ cell(x, y, c.w, HEADH, "#EAF3D6", footText(c), "700 13px "+FONT, "#1F6F45"); x += c.w; }
+  ctx.fillStyle = "#2E8B57"; ctx.fillRect(M, y, tableW, 2);
+  return await new Promise((res, rej) => cv.toBlob(b => b ? res(b) : rej(new Error("The browser could not create the image.")), "image/png"));
+}
+$("dlPivotImg").addEventListener("click", async () => {
+  if (!R || !R.pivot) return;
+  if (!R.pivot.rows.length) return dlNote("No rows to capture. Widen the filters first.", true);
+  const btn = $("dlPivotImg"); btn.disabled = true;
+  try { const blob = await buildPivotPng(); await saveFile("Pendency_Pivot_"+today()+".png", blob); }
+  catch(e){ dlNote("Could not create the table image: "+((e&&e.message)||e), true); }
+  btn.disabled = false;
 });
 
 window.__salvage = { get R(){ return R; } };
